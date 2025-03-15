@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -24,6 +25,20 @@ type Upgrader struct {
 	// Subprotocols is the server's supported protocols in order of prefernce.
 	// if no Subprotocols is specified then no protocol is negotiated during handshake.
 	Subprotocols []string
+}
+
+func (u *Upgrader) selectSubprotocol(headers http.Header) *string {
+	values := headers.Values("Sec-WebSocket-Protocol")
+	subprotocols := splitHeaderValuesBySpace(values)
+
+	for _, protocol := range subprotocols {
+		if slices.Contains(u.Subprotocols, protocol) {
+			fmt.Println("selected subprotocol: ", protocol)
+			return &protocol
+		}
+	}
+
+	return nil
 }
 
 // TODO: add docs
@@ -94,6 +109,11 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	// generate new kay hash
 	newKey := makeKeyHash(key)
 
+	// Select a subprotocol (if exists)
+	subprotocol := u.selectSubprotocol(r.Header)
+
+	// TODO: add extension handling
+
 	// Hijack connection
 	_, bufrw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
@@ -109,7 +129,10 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	handshake = append(handshake, "Upgrade: websocket\r\nConnection: Upgrade\r\n"...)
 	// Challange key
 	handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Accept: %s\r\n", newKey)...)
-	// TODO: add subprotocol selection
+	// selected subprotocol
+	if subprotocol != nil {
+		handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", *subprotocol)...)
+	}
 	// TODO: add extension handling
 
 	// Required empty line
