@@ -1,18 +1,10 @@
 package websocket
 
 import (
-	"crypto/sha1"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
-)
-
-const (
-	VERSION  = "13"
-	KEY_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
 // The Upgrader used to validate the handshake
@@ -27,6 +19,25 @@ type Upgrader struct {
 	Subprotocols []string
 }
 
+// checkSameOrigin checks if the origin matchs the host.
+// returns True if no origin header was found, it's implied in this case
+// that the request was not made from a browser.
+func checkSameOrigin(r *http.Request) bool {
+	origin := r.Header["Origin"]
+	if len(origin) == 0 {
+		// No origin header so we can assume the client is not a browser.
+		return true
+	}
+	// parse host from origin and make sure it's valid
+	u, err := url.Parse(origin[0])
+	if err != nil {
+		return false
+	}
+
+	return u.Host == r.Host
+}
+
+// selectSubprotocol selects a subprotocols from the specified Subprotocols
 func (u *Upgrader) selectSubprotocol(headers http.Header) *string {
 	values := headers.Values("Sec-WebSocket-Protocol")
 	subprotocols := splitHeaderValuesBySpace(values)
@@ -103,7 +114,7 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	if key == "" {
 		return http.StatusBadRequest, fmt.Errorf("websocket: no Sec-WebSocket-Key header found")
 	}
-	if !validKey(key) {
+	if !isValidKey(key) {
 		return http.StatusBadRequest, fmt.Errorf("websocket: invalid challange key value")
 	}
 	// generate new kay hash
@@ -154,70 +165,4 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	}
 
 	return http.StatusOK, nil
-}
-
-// Check if a list of headers exist with thier corresponding values.
-// The headers and thier values are case-insensitive
-func checkHeaderValue(headers http.Header, h string, v string) bool {
-
-	values := headers.Values(h)
-	// header doesn't exists or is empty
-	if len(values) == 0 {
-		return false
-	}
-
-	for _, strList := range values {
-		parts := strings.Split(strList, ",")
-
-		for _, str := range parts {
-			s := strings.ToLower(strings.TrimSpace(str))
-
-			if s == strings.ToLower(v) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// checkSameOrigin checks if the origin matchs the host.
-// returns True if no origin header was found, it's implied in this case
-// that the request was not made from a browser.
-func checkSameOrigin(r *http.Request) bool {
-	origin := r.Header["Origin"]
-	if len(origin) == 0 {
-		// No origin header so we can assume the client is not a browser.
-		return true
-	}
-	// parse host from origin and make sure it's valid
-	u, err := url.Parse(origin[0])
-	if err != nil {
-		return false
-	}
-
-	return u.Host == r.Host
-}
-
-// Validates that the challange key is 16 bytes in length when decoded
-func validKey(key string) bool {
-	if key == "" {
-		return false
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		return false
-	}
-	return len(decoded) == 16
-}
-
-func makeKeyHash(key string) string {
-	// Make hash
-	hasher := sha1.New()
-	hasher.Write([]byte(key))
-	hasher.Write([]byte(KEY_GUID))
-
-	// Encode to Base64
-	return base64.StdEncoding.EncodeToString(hasher.Sum(nil))
 }
