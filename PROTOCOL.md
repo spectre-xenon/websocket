@@ -208,6 +208,8 @@ WebSocket Connection.
 
 - 0xB-F are reserved for further control frames yet to be defined
 
+**Mask: 1 bit**
+
 Defines whether the "Payload data" is masked. If set to 1, a
 masking key is present in masking-key, and this is used to unmask
 the "Payload data".
