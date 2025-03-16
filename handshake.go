@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -38,18 +39,18 @@ func checkSameOrigin(r *http.Request) bool {
 }
 
 // selectSubprotocol selects a subprotocols from the specified Subprotocols
-func (u *Upgrader) selectSubprotocol(headers http.Header) *string {
+func (u *Upgrader) selectSubprotocol(headers http.Header) string {
 	values := headers.Values("Sec-WebSocket-Protocol")
 	subprotocols := splitHeaderValuesBySpace(values)
 
 	for _, protocol := range subprotocols {
 		if slices.Contains(u.Subprotocols, protocol) {
 			fmt.Println("selected subprotocol: ", protocol)
-			return &protocol
+			return protocol
 		}
 	}
 
-	return nil
+	return ""
 }
 
 // TODO: add docs
@@ -126,7 +127,7 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	// TODO: add extension handling
 
 	// Hijack connection
-	_, bufrw, err := http.NewResponseController(w).Hijack()
+	netConn, bufrw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		return http.StatusInternalServerError, fmt.Errorf("websocket: error while hijacking: %s", err)
 
@@ -141,8 +142,8 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	// Challange key
 	handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Accept: %s\r\n", newKey)...)
 	// selected subprotocol
-	if subprotocol != nil {
-		handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", *subprotocol)...)
+	if subprotocol != "" {
+		handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", subprotocol)...)
 	}
 	// TODO: add extension handling
 
@@ -153,16 +154,40 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	bufrw.Writer.Write(handshake)
 	bufrw.Writer.Flush()
 
+	// Make connection struct
+	conn := &Conn{
+		netConn:     netConn,
+		br:          bufrw.Reader,
+		bw:          bufrw.Writer,
+		subprotocol: subprotocol,
+	}
+
 	// HACK: testing that it works
 	for {
-		buf := make([]byte, 1024)
-		_, err := bufrw.Reader.Read(buf)
+		headers, err := conn.parseFrameHeaders()
 		if err != nil {
+			fmt.Printf("parsing headers err: %s\n", err)
+			break
+		}
+		payload, err := conn.readSkip(int(headers.PayloadLength))
+		if err != nil {
+			fmt.Printf("peeking err: %s\n", err)
 			break
 		}
 
-		fmt.Printf("recived from ws: %08b\n", buf)
+		jsonData, _ := json.MarshalIndent(headers, "", "  ") // "" prefix, "  " indent
+		fmt.Println(string(jsonData))
+
+		var data []byte
+		for i := 0; i < len(payload); i++ {
+			payload[i] ^= headers.MaskingKey[i%4]
+			data = append(data, payload[i])
+		}
+		fmt.Printf("masked data: %+v\n", data)
+		fmt.Printf("unmasked data: %s\n", string(data))
 	}
+
+	conn.Close()
 
 	return http.StatusOK, nil
 }
