@@ -17,12 +17,28 @@ var upgrader = &websocket.Upgrader{
 
 func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		err := upgrader.Upgrade(w, r)
+		ws, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			fmt.Println(err)
+			return
+		}
+		defer ws.Close()
+
+		for {
+			mt, payload, err := ws.NextMessage()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			_, err = ws.SendMessage(payload, mt)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
 		}
 	})
 
 	http.ListenAndServe(":8080", http.DefaultServeMux)
 }
-

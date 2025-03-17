@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 type Opcode byte
@@ -64,6 +65,41 @@ const (
 	payloadLengthMask = 0x7F
 )
 
+const (
+	CloseNormal = 1000 + iota
+	CloseGoingAway
+	CloseProtocolError
+	CloseUnknownData
+	CloseReserved
+	CloseNoStatus
+	CloseAbnormal
+	CloseMistachedPayloadData
+	ClosePolicyViolation
+	CloseFrameTooBig
+	CloseRequiredExtension
+	CloseInternalServerErr
+	CloseFailedTLS = 1015
+)
+
+const (
+	maxControlFramePayloadSize = 125
+)
+
+var validCloseFrameCodes = map[int]bool{
+	CloseNormal:               true,
+	CloseGoingAway:            true,
+	CloseProtocolError:        true,
+	CloseUnknownData:          true,
+	CloseReserved:             true,
+	CloseNoStatus:             false,
+	CloseAbnormal:             false,
+	CloseMistachedPayloadData: true,
+	ClosePolicyViolation:      true,
+	CloseFrameTooBig:          true,
+	CloseRequiredExtension:    true,
+	CloseFailedTLS:            false,
+}
+
 type Headers struct {
 	// FIN indicates that this is the final fragment in a message.
 	// The first fragment MAY also be the final fragment.
@@ -89,7 +125,7 @@ type Headers struct {
 }
 
 func (c *Conn) parseFrameHeaders() (*Headers, error) {
-	buf, err := c.readSkip(2)
+	buf, err := c.peekDiscard(2)
 	if err != nil {
 		return nil, err
 	}
@@ -107,22 +143,22 @@ func (c *Conn) parseFrameHeaders() (*Headers, error) {
 
 	switch payloadLength {
 	case 126:
-		plBuf, err := c.readSkip(2)
+		plBuf, err := c.peekDiscard(2)
 		if err != nil {
 			return nil, err
 		}
 		payloadLength = uint64(binary.BigEndian.Uint16(plBuf))
 	case 127:
-		plBuf, err := c.readSkip(8)
+		plBuf, err := c.peekDiscard(8)
 		if err != nil {
 			return nil, err
 		}
-		payloadLength = uint64(binary.BigEndian.Uint16(plBuf))
+		payloadLength = binary.BigEndian.Uint64(plBuf)
 	}
 
 	var maskingKey []byte
 	if mask {
-		maskingKey, err = c.readSkip(4)
+		maskingKey, err = c.peekDiscard(4)
 		if err != nil {
 			return nil, err
 		}
@@ -135,9 +171,68 @@ func (c *Conn) parseFrameHeaders() (*Headers, error) {
 		RSV3:          rsv3,
 		Opcode:        opcode,
 		Mask:          mask,
-		PayloadLength: uint64(payloadLength),
+		PayloadLength: payloadLength,
 		MaskingKey:    maskingKey,
 	}, nil
+}
+
+func makeFrameHeadersBuf(h *Headers) []byte {
+	buf := make([]byte, 0)
+
+	// Intialize as 0 and apply masks
+	var byte0 byte = 0
+	if h.FIN {
+		byte0 |= finMask
+	}
+	if h.RSV1 {
+		byte0 |= rsv1Mask
+	}
+	if h.RSV2 {
+		byte0 |= rsv2Mask
+	}
+	if h.RSV3 {
+		byte0 |= rsv3Mask
+	}
+	byte0 |= byte(h.Opcode)
+	// Append first byte
+	buf = append(buf, byte0)
+
+	// Initialize the second byte
+	var byte1 byte = 0
+	if h.Mask {
+		byte1 |= maskMask
+	}
+
+	// Add PayloadLength bytes
+	pl := h.PayloadLength
+	switch {
+	case pl <= 125:
+		byte1 |= byte(pl)
+		// Append second byte
+		buf = append(buf, byte1)
+	case pl <= math.MaxUint16:
+		// Create Uint16 bytes from number as Network bytes order
+		byte1 |= 126
+		plBytes := make([]byte, 2)
+		binary.BigEndian.PutUint16(plBytes, uint16(pl))
+		// Append second bytes
+		buf = append(buf, byte1)
+		buf = append(buf, plBytes...)
+	default:
+		// Number is Uint64
+		byte1 |= 127
+		plBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(plBytes, pl)
+		// Append second bytes
+		buf = append(buf, byte1)
+		buf = append(buf, plBytes...)
+	}
+
+	if h.Mask {
+		buf = append(buf, h.MaskingKey...)
+	}
+
+	return buf
 }
 
 func readToBool(byte, mask byte) bool {

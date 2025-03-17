@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"net/http"
@@ -11,6 +12,19 @@ const (
 	VERSION  = "13"
 	KEY_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
+
+func makeMaskingKey() []byte {
+	maskingKey := make([]byte, 4)
+	// Never returns an error
+	_, _ = rand.Read(maskingKey)
+	return maskingKey
+}
+
+func toggleMask(payload, maskingKey []byte) {
+	for i := range payload {
+		payload[i] ^= maskingKey[i%4]
+	}
+}
 
 // checkHeaderValue Check if a list of headers exist with thier corresponding values.
 // The headers and thier values are case-insensitive.

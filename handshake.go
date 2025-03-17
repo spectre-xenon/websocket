@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -54,48 +53,48 @@ func (u *Upgrader) selectSubprotocol(headers http.Header) string {
 }
 
 // TODO: add docs
-func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) error {
-	code, err := u.upgradeConnection(w, r)
+func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
+	ws, code, err := u.upgradeConnection(w, r)
 	if err != nil {
 		w.Header().Set("Sec-Websocket-Version", VERSION)
 		http.Error(w, http.StatusText(code), code)
-		return err
+		return nil, err
 	}
 
-	return nil
+	return ws, nil
 }
 
 // TODO: add docs
-func (u *Upgrader) UpgradeNoResponse(w http.ResponseWriter, r *http.Request) (int, error) {
-	code, err := u.upgradeConnection(w, r)
+func (u *Upgrader) UpgradeNoResponse(w http.ResponseWriter, r *http.Request) (*Conn, int, error) {
+	ws, code, err := u.upgradeConnection(w, r)
 	if err != nil {
-		return code, err
+		return nil, code, err
 	}
 
-	return http.StatusOK, nil
+	return ws, code, nil
 }
 
 // TODO: add docs
-func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (int, error) {
+func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*Conn, int, error) {
 	// Reject methods other than GET
 	if r.Method != http.MethodGet {
-		return http.StatusBadRequest, fmt.Errorf("websocket: method not allowed: %s", r.Method)
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: method not allowed: %s", r.Method)
 	}
 
 	// Check for main required headers
 	ok := checkHeaderValue(r.Header, "Upgrade", "websocket")
 	if !ok {
-		return http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched required Upgrade header")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched required Upgrade header")
 	}
 	ok = checkHeaderValue(r.Header, "Connection", "Upgrade")
 	if !ok {
-		return http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched required Connection header")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched required Connection header")
 	}
 
 	// Check websocket proto version
 	ok = checkHeaderValue(r.Header, "Sec-WebSocket-Version", VERSION)
 	if !ok {
-		return http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched Sec-WebSocket-Version header")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: missing/mismatched Sec-WebSocket-Version header")
 	}
 
 	// Do origin check
@@ -106,17 +105,17 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 		originAllowed = u.CheckOrigin(r)
 	}
 	if !originAllowed {
-		return http.StatusBadRequest, fmt.Errorf("websocket: client failed Upgrader.CheckOrigin method")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: client failed Upgrader.CheckOrigin method")
 	}
 
 	// Challange key
 	key := r.Header.Get("Sec-WebSocket-Key")
 	// No challange key
 	if key == "" {
-		return http.StatusBadRequest, fmt.Errorf("websocket: no Sec-WebSocket-Key header found")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: no Sec-WebSocket-Key header found")
 	}
 	if !isValidKey(key) {
-		return http.StatusBadRequest, fmt.Errorf("websocket: invalid challange key value")
+		return nil, http.StatusBadRequest, fmt.Errorf("websocket: invalid challange key value")
 	}
 	// generate new kay hash
 	newKey := makeKeyHash(key)
@@ -129,9 +128,15 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	// Hijack connection
 	netConn, bufrw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("websocket: error while hijacking: %s", err)
-
+		return nil, http.StatusInternalServerError, fmt.Errorf("websocket: error while hijacking: %s", err)
 	}
+	// Clean connection if error happens
+	defer func() {
+		if netConn != nil {
+			// Safe because wew set the netConn variable to nil before returning.
+			netConn.Close()
+		}
+	}()
 
 	// Build handshake
 	handshake := make([]byte, 0)
@@ -150,44 +155,18 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (in
 	// Required empty line
 	handshake = append(handshake, "\r\n"...)
 
-	// Write handshake and flush
-	bufrw.Writer.Write(handshake)
-	bufrw.Writer.Flush()
+	// Write handshake directly
+	netConn.Write(handshake)
 
-	// Make connection struct
 	conn := &Conn{
 		netConn:     netConn,
 		br:          bufrw.Reader,
 		bw:          bufrw.Writer,
 		subprotocol: subprotocol,
+		isServer:    true,
 	}
 
-	// HACK: testing that it works
-	for {
-		headers, err := conn.parseFrameHeaders()
-		if err != nil {
-			fmt.Printf("parsing headers err: %s\n", err)
-			break
-		}
-		payload, err := conn.readSkip(int(headers.PayloadLength))
-		if err != nil {
-			fmt.Printf("peeking err: %s\n", err)
-			break
-		}
-
-		jsonData, _ := json.MarshalIndent(headers, "", "  ") // "" prefix, "  " indent
-		fmt.Println(string(jsonData))
-
-		var data []byte
-		for i := 0; i < len(payload); i++ {
-			payload[i] ^= headers.MaskingKey[i%4]
-			data = append(data, payload[i])
-		}
-		fmt.Printf("masked data: %+v\n", data)
-		fmt.Printf("unmasked data: %s\n", string(data))
-	}
-
-	conn.Close()
-
-	return http.StatusOK, nil
+	// Unset netConn
+	netConn = nil
+	return conn, http.StatusSwitchingProtocols, nil
 }
