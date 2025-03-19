@@ -44,7 +44,6 @@ func (u *Upgrader) selectSubprotocol(headers http.Header) string {
 
 	for _, protocol := range subprotocols {
 		if slices.Contains(u.Subprotocols, protocol) {
-			fmt.Println("selected subprotocol: ", protocol)
 			return protocol
 		}
 	}

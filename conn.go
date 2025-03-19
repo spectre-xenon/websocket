@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -24,6 +23,7 @@ type Conn struct {
 var (
 	ErrInvalidMessageType = errors.New("websocket: Specified message must be TextMessage or BinaryMessage")
 	ErrBadMessage         = errors.New("websocket: Received a message that violates the websocket protocol")
+	ErrUtf8               = errors.New("websocket: Received a TextMessage that contains invalid utf-8")
 	ErrNormalClose        = errors.New("websocket: Peer disconnected normally")
 	ErrUnexpectedClose    = errors.New("websocket: Peer disconnected unexpectedly")
 )
@@ -57,166 +57,180 @@ func (c *Conn) discardRemaining(n int64) (int64, error) {
 	return nn, err
 }
 
-func (c *Conn) handleSingleFrame(h *Headers, fragmented bool) (payload []byte, err error) {
-	if fragmented {
-		if h.Opcode != ContinuationFrame {
-			_, err = c.sendControl(CloseFrame, CloseMistachedPayloadData, nil)
-			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-				return payload, ErrUnexpectedClose
-			}
-			return payload, ErrBadMessage
-		}
+func isEOF(err error) bool {
+	return err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF)
+}
 
-		payload, err = c.readPayload(h.PayloadLength)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
+func (c *Conn) handleSingleMessageErr(err error) (Opcode, []byte, error) {
+	switch {
+	case isEOF(err):
+		return CloseFrame, nil, ErrUnexpectedClose
+	case errors.Is(err, ErrUtf8):
+		return c.closeWithErr(CloseMistachedPayloadData)
+	case errors.Is(err, ErrBadMessage):
+		return c.closeWithErr(CloseProtocolError)
+	default:
+		return CloseFrame, nil, err
+	}
+}
 
-		if h.Opcode == TextMessage {
-			isValid := utf8.Valid(payload)
-			if !isValid {
-				_, err = c.sendControl(CloseFrame, CloseMistachedPayloadData, nil)
-				if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-					return payload, ErrUnexpectedClose
-				}
-				return payload, ErrBadMessage
-			}
-		}
+func (c *Conn) handleTextMessage(h *Headers) (payload []byte, err error) {
+	payload, err = c.readPayload(h.PayloadLength)
+	if err != nil {
+		return payload, err
+	}
+	// toggle mask if we're a server
+	if c.isServer {
+		toggleMask(payload, h.MaskingKey)
+	}
+	// check if valid utf-8 payload
+	if !utf8.Valid(payload) {
+		return payload, ErrUtf8
+	}
+	return
+}
 
-		return payload, nil
+func (c *Conn) handleBinaryMessage(h *Headers) (payload []byte, err error) {
+	payload, err = c.readPayload(h.PayloadLength)
+	if err != nil {
+		return payload, err
+	}
+	// toggle mask if we're a server
+	if c.isServer {
+		toggleMask(payload, h.MaskingKey)
+	}
+	return
+}
+
+func (c *Conn) handleCloseFrame(h *Headers) (payload []byte, err error) {
+	// Message must contain a status code
+	if h.PayloadLength < 2 {
+		return payload, ErrBadMessage
 	}
 
-	// intial frame or is a single frame.
-	switch h.Opcode {
-	case TextMessage:
-		payload, err = c.readPayload(h.PayloadLength)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-
-		// toggle mask
+	// read status code
+	payload, err = c.readPayload(h.PayloadLength)
+	if err != nil {
+		return payload, err
+	}
+	// toggle mask if we're a server
+	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
+	}
 
-		isValid := utf8.Valid(payload)
-		if !isValid {
-			_, err = c.sendControl(CloseFrame, CloseMistachedPayloadData, nil)
-			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-				return payload, ErrUnexpectedClose
-			}
-			return payload, ErrBadMessage
-		}
+	// parse status code
+	statusCode := binary.BigEndian.Uint16(payload[0:2])
+	// No need to handle ErrUnexpectedEOF
+	if len(payload) <= 2 {
+		payload = slices.Delete(payload, 0, 2)
+	} else {
+		payload = payload[2:]
+	}
 
-	case BinaryMessage:
-		payload, err = c.readPayload(h.PayloadLength)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-		// toggle mask
+	// we don't care if sending the control fails here
+	_, _ = c.sendControl(CloseFrame, statusCode, payload)
+	return payload, ErrNormalClose
+}
+
+func (c *Conn) handlePingFrame(h *Headers) (payload []byte, err error) {
+	payload, err = c.readPayload(h.PayloadLength)
+	if err != nil {
+		return payload, err
+	}
+	// toggle mask
+	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
-	case CloseFrame:
-		if h.PayloadLength < 2 {
-			_, _ = c.sendControl(CloseFrame, CloseNormal, payload)
-			return payload, ErrBadMessage
-		}
-		// read status code
-		payload, err = c.readPayload(h.PayloadLength)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-		// toggle mask
-		toggleMask(payload, h.MaskingKey)
+	}
 
-		statusCode := binary.BigEndian.Uint16(payload[0:2])
-		// No need to handle ErrUnexpectedEOF
-		if len(payload) <= 2 {
-			payload = slices.Delete(payload, 0, 2)
-		} else {
-			payload = payload[2:]
-		}
-		_, _ = c.sendControl(CloseFrame, statusCode, payload)
-		return payload, ErrNormalClose
-	case PingFrame:
-		payload, err = c.readPayload(h.PayloadLength)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-		// toggle mask
-		toggleMask(payload, h.MaskingKey)
-
-		_, err = c.sendControl(PongFrame, 0, payload)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-	case PongFrame:
-		return
-	default:
-		_, err = c.sendControl(CloseFrame, CloseProtocolError, nil)
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return payload, ErrUnexpectedClose
-		}
-		return make([]byte, 0), ErrBadMessage
+	_, err = c.sendControl(PongFrame, 0, payload)
+	if err != nil {
+		return payload, err
 	}
 
 	return
+}
+
+func (c *Conn) handleSingleFrame(h *Headers) (payload []byte, err error) {
+	switch h.Opcode {
+	case TextMessage:
+		return c.handleTextMessage(h)
+	case BinaryMessage:
+		return c.handleBinaryMessage(h)
+	case ContinuationFrame:
+		// Same as binary message handling
+		return c.handleBinaryMessage(h)
+	case CloseFrame:
+		return c.handleCloseFrame(h)
+	case PingFrame:
+		return c.handlePingFrame(h)
+	case PongFrame:
+		return
+	default:
+		// Unhandled Opcode
+		return payload, ErrBadMessage
+	}
 }
 
 func (c *Conn) NextMessage() (Opcode, []byte, error) {
 	// loop and ignore control message (eg. PING PONG)
 	for {
 		initialHeaders, err := c.parseFrameHeaders()
-		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+		if isEOF(err) {
 			return CloseFrame, nil, ErrUnexpectedClose
 		}
 
 		// Check reserved bits
 		if initialHeaders.RSV1 || initialHeaders.RSV2 || initialHeaders.RSV3 {
-			reason := "Reserved bits set"
-			_, err := c.sendControl(CloseFrame, CloseProtocolError, []byte(reason))
-			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-				return CloseFrame, nil, ErrUnexpectedClose
-			}
-			return CloseFrame, nil, ErrBadMessage
+			return c.closeWithErr(CloseProtocolError)
 		}
 
 		// Client messages must be masked
-		if c.isServer && !initialHeaders.Mask {
-			reason := "Received unmasked message"
-			_, err := c.sendControl(CloseFrame, CloseProtocolError, []byte(reason))
-			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-				return CloseFrame, nil, ErrUnexpectedClose
-			}
-			return CloseFrame, nil, ErrBadMessage
+		if initialHeaders.Mask != c.isServer {
+			return c.closeWithErr(CloseProtocolError)
 		}
 
-		initialPayload, err := c.handleSingleFrame(initialHeaders, false)
+		// initial message payload
+		initialPayload, err := c.handleSingleFrame(initialHeaders)
 		if err != nil {
-			return CloseFrame, nil, err
+			return c.handleSingleMessageErr(err)
 		}
 
 		// skip this frame if control frame
 		if initialHeaders.Opcode == PingFrame || initialHeaders.Opcode == PongFrame {
 			continue
 		}
-
 		// Single frame
 		if initialHeaders.FIN {
 			return initialHeaders.Opcode, initialPayload, nil
 		}
-
-		if initialHeaders.Opcode != TextMessage && initialHeaders.Opcode != BinaryMessage {
-			return CloseFrame, nil, ErrUnexpectedClose
+		// illegal ContinuationFrame
+		if initialHeaders.Opcode == ContinuationFrame {
+			return c.closeWithErr(CloseProtocolError)
 		}
 
 		// Fragmented frames
 		for {
 			nextHeaders, err := c.parseFrameHeaders()
-			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+			if isEOF(err) {
 				return CloseFrame, nil, ErrUnexpectedClose
 			}
 
-			nextPayload, err := c.handleSingleFrame(nextHeaders, true)
+			// skip this frame if control frame
+			if nextHeaders.Opcode == PingFrame || nextHeaders.Opcode == PongFrame {
+				continue
+			}
+			// illegal text/binary frame
+			if nextHeaders.Opcode != ContinuationFrame {
+				return c.closeWithErr(CloseProtocolError)
+			}
+
+			nextPayload, err := c.handleSingleFrame(nextHeaders)
 			if err != nil {
-				return CloseFrame, nil, err
+				return c.handleSingleMessageErr(err)
+			}
+
+			if initialHeaders.Opcode == TextMessage && !utf8.Valid(nextPayload) {
+				return c.closeWithErr(CloseMistachedPayloadData)
 			}
 
 			// append data
@@ -270,8 +284,6 @@ func (c *Conn) sendControl(mt Opcode, status uint16, reason []byte) (int, error)
 	// append reason
 	payload = append(payload, reason...)
 
-	fmt.Printf("control payload: %v", payload)
-
 	// Mask if we're a client
 	if !c.isServer && len(payload) > 0 {
 		maskingKey := makeMaskingKey()
@@ -293,10 +305,22 @@ func (c *Conn) sendControl(mt Opcode, status uint16, reason []byte) (int, error)
 	return n, err
 }
 
+func (c *Conn) closeWithErr(code uint16) (Opcode, []byte, error) {
+	_, err := c.sendControl(CloseFrame, code, nil)
+	if isEOF(err) {
+		return CloseFrame, nil, ErrUnexpectedClose
+	}
+	// close tcp connection
+	c.Close()
+	return CloseFrame, nil, ErrBadMessage
+}
+
 // Close writes the websocket close frame,
 // flushes the buffer and closes the underlying connections.
 func (c *Conn) Close() {
 	// TODO: write Close frame
 
-	c.netConn.Close()
+	if c.netConn != nil {
+		c.netConn.Close()
+	}
 }

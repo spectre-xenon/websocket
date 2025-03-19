@@ -66,7 +66,7 @@ const (
 )
 
 const (
-	CloseNormal = 1000 + iota
+	CloseNormal uint16 = 1000 + iota
 	CloseGoingAway
 	CloseProtocolError
 	CloseUnknownData
@@ -78,25 +78,28 @@ const (
 	CloseFrameTooBig
 	CloseRequiredExtension
 	CloseInternalServerErr
-	CloseFailedTLS = 1015
+	CloseFailedTLS uint16 = 1015
 )
 
 const (
 	maxControlFramePayloadSize = 125
+	minNonCloseStatusCode      = 3000
+	maxNonCloseStatusCode      = 4999
 )
 
-var validCloseFrameCodes = map[int]bool{
+var validCloseFrameCodes = map[uint16]bool{
 	CloseNormal:               true,
 	CloseGoingAway:            true,
 	CloseProtocolError:        true,
 	CloseUnknownData:          true,
-	CloseReserved:             true,
+	CloseReserved:             false,
 	CloseNoStatus:             false,
 	CloseAbnormal:             false,
 	CloseMistachedPayloadData: true,
 	ClosePolicyViolation:      true,
 	CloseFrameTooBig:          true,
 	CloseRequiredExtension:    true,
+	CloseInternalServerErr:    true,
 	CloseFailedTLS:            false,
 }
 
