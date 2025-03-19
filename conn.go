@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"slices"
 	"unicode/utf8"
 )
 
@@ -103,8 +102,13 @@ func (c *Conn) handleBinaryMessage(h *Headers) (payload []byte, err error) {
 }
 
 func (c *Conn) handleCloseFrame(h *Headers) (payload []byte, err error) {
-	// Message must contain a status code
-	if h.PayloadLength < 2 {
+	// If no payload then it's a Close with no status or reason
+	if h.PayloadLength == 0 {
+		_, _ = c.sendControl(CloseFrame, CloseNormal, payload)
+		return payload, ErrNormalClose
+	}
+	// payload length must be atleast 2 and not bigger than 125 (status code)
+	if h.PayloadLength < 2 || h.PayloadLength > maxControlFramePayloadSize {
 		return payload, ErrBadMessage
 	}
 
@@ -120,11 +124,21 @@ func (c *Conn) handleCloseFrame(h *Headers) (payload []byte, err error) {
 
 	// parse status code
 	statusCode := binary.BigEndian.Uint16(payload[0:2])
-	// No need to handle ErrUnexpectedEOF
+	// check for valid status codes
+	if !validCloseFrameCodes[statusCode] &&
+		(statusCode < minNonCloseStatusCode || statusCode > maxNonCloseStatusCode) {
+		return payload, ErrBadMessage
+	}
+
+	// handle extra reason payload
 	if len(payload) <= 2 {
-		payload = slices.Delete(payload, 0, 2)
+		payload = make([]byte, 0)
 	} else {
 		payload = payload[2:]
+	}
+	// Verify valid utf-8
+	if len(payload) > 0 && !utf8.Valid(payload) {
+		return payload, ErrBadMessage
 	}
 
 	// we don't care if sending the control fails here
@@ -199,15 +213,15 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 		if initialHeaders.Opcode == PingFrame || initialHeaders.Opcode == PongFrame {
 			continue
 		}
-		// Single frame
-		if initialHeaders.FIN {
-			return initialHeaders.Opcode, initialPayload, nil
-		}
 		// illegal ContinuationFrame
 		if initialHeaders.Opcode == ContinuationFrame {
 			return c.closeWithErr(CloseProtocolError)
 		}
 
+		// Single frame
+		if initialHeaders.FIN {
+			return initialHeaders.Opcode, initialPayload, nil
+		}
 		// Fragmented frames
 		for {
 			nextHeaders, err := c.parseFrameHeaders()
@@ -219,14 +233,15 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 			if nextHeaders.Opcode == PingFrame || nextHeaders.Opcode == PongFrame {
 				continue
 			}
-			// illegal text/binary frame
-			if nextHeaders.Opcode != ContinuationFrame {
-				return c.closeWithErr(CloseProtocolError)
-			}
 
 			nextPayload, err := c.handleSingleFrame(nextHeaders)
 			if err != nil {
 				return c.handleSingleMessageErr(err)
+			}
+
+			// illegal text/binary frame
+			if nextHeaders.Opcode != ContinuationFrame {
+				return c.closeWithErr(CloseProtocolError)
 			}
 
 			if initialHeaders.Opcode == TextMessage && !utf8.Valid(nextPayload) {
