@@ -27,27 +27,17 @@ var (
 	ErrUnexpectedClose    = errors.New("websocket: Peer disconnected unexpectedly")
 )
 
-func (c *Conn) peekDiscard(n int) ([]byte, error) {
-	buf, err := c.br.Peek(n)
-	if err != nil {
-		return buf, err
-	}
-	// Guaranteed to succeed, cause of check above
-	_, _ = c.br.Discard(len(buf))
-	return buf, err
-}
-
-func (c *Conn) readPayload(pl uint64) ([]byte, error) {
-	if pl == 0 {
+func (c *Conn) read(n uint64) ([]byte, error) {
+	if n == 0 {
 		return make([]byte, 0), nil
 	}
 
-	payload := make([]byte, pl)
-	if _, err := io.ReadFull(c.br, payload); err != nil {
-		return payload, err
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c.br, buf); err != nil {
+		return buf, err
 	}
 
-	return payload, nil
+	return buf, nil
 }
 
 func (c *Conn) discardRemaining(n int64) (int64, error) {
@@ -60,7 +50,7 @@ func isEOF(err error) bool {
 }
 
 func (c *Conn) handleTextMessage(h *Headers) ([]byte, error) {
-	payload, err := c.readPayload(h.PayloadLength)
+	payload, err := c.read(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -69,14 +59,14 @@ func (c *Conn) handleTextMessage(h *Headers) ([]byte, error) {
 		toggleMask(payload, h.MaskingKey)
 	}
 	// check if valid utf-8 payload
-	// if !utf8.Valid(payload) {
-	// 	return payload, ErrUtf8
-	// }
+	if !utf8.Valid(payload) {
+		return payload, ErrUtf8
+	}
 	return payload, nil
 }
 
 func (c *Conn) handleBinaryMessage(h *Headers) ([]byte, error) {
-	payload, err := c.readPayload(h.PayloadLength)
+	payload, err := c.read(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -99,7 +89,7 @@ func (c *Conn) handleCloseFrame(h *Headers) ([]byte, error) {
 	}
 
 	// read status code
-	payload, err := c.readPayload(h.PayloadLength)
+	payload, err := c.read(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -142,7 +132,7 @@ func (c *Conn) handlePingFrame(h *Headers) ([]byte, error) {
 		return nil, ErrBadMessage
 	}
 
-	payload, err := c.readPayload(h.PayloadLength)
+	payload, err := c.read(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -169,7 +159,7 @@ func (c *Conn) handlePongFrame(h *Headers) ([]byte, error) {
 		return nil, ErrBadMessage
 	}
 
-	payload, err := c.readPayload(h.PayloadLength)
+	payload, err := c.read(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}

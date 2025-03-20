@@ -128,7 +128,7 @@ type Headers struct {
 }
 
 func (c *Conn) parseFrameHeaders() (*Headers, error) {
-	buf, err := c.peekDiscard(2)
+	buf, err := c.read(2)
 	if err != nil {
 		return nil, err
 	}
@@ -146,13 +146,13 @@ func (c *Conn) parseFrameHeaders() (*Headers, error) {
 
 	switch payloadLength {
 	case 126:
-		plBuf, err := c.peekDiscard(2)
+		plBuf, err := c.read(2)
 		if err != nil {
 			return nil, err
 		}
 		payloadLength = uint64(binary.BigEndian.Uint16(plBuf))
 	case 127:
-		plBuf, err := c.peekDiscard(8)
+		plBuf, err := c.read(8)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +161,7 @@ func (c *Conn) parseFrameHeaders() (*Headers, error) {
 
 	var maskingKey []byte
 	if mask {
-		maskingKey, err = c.peekDiscard(4)
+		maskingKey, err = c.read(4)
 		if err != nil {
 			return nil, err
 		}
