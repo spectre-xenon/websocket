@@ -58,8 +58,8 @@ func (c *Conn) handleTextMessage(h *Headers) ([]byte, error) {
 	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
 	}
-	// check if valid utf-8 payload
-	if !utf8.Valid(payload) {
+	// check if valid utf-8 payload if we're not a fragmented message
+	if h.FIN && !utf8.Valid(payload) {
 		return payload, ErrUtf8
 	}
 	return payload, nil
@@ -260,16 +260,17 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 				continue
 			}
 
-			if initialHeaders.Opcode == TextMessage && !utf8.Valid(nextPayload) {
-				return c.closeWithErr(CloseMistachedPayloadData)
-			}
-
 			// append data
 			initialPayload = append(initialPayload, nextPayload...)
 
 			if nextHeaders.FIN {
 				break
 			}
+		}
+
+		// validate utf-8 after all joining all fragments to avoid invalid code points
+		if initialHeaders.Opcode == TextMessage && !utf8.Valid(initialPayload) {
+			return c.closeWithErr(CloseMistachedPayloadData)
 		}
 
 		return initialHeaders.Opcode, initialPayload, nil
