@@ -33,7 +33,7 @@ func (c *Conn) peekDiscard(n int) ([]byte, error) {
 		return buf, err
 	}
 	// Guaranteed to succeed, cause of check above
-	c.br.Discard(len(buf))
+	_, _ = c.br.Discard(len(buf))
 	return buf, err
 }
 
@@ -43,8 +43,7 @@ func (c *Conn) readPayload(pl uint64) ([]byte, error) {
 	}
 
 	payload := make([]byte, pl)
-	_, err := io.ReadFull(c.br, payload)
-	if err != nil {
+	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return payload, err
 	}
 
@@ -60,21 +59,8 @@ func isEOF(err error) bool {
 	return err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
-func (c *Conn) handleSingleMessageErr(err error) (Opcode, []byte, error) {
-	switch {
-	case isEOF(err):
-		return CloseFrame, nil, ErrUnexpectedClose
-	case errors.Is(err, ErrUtf8):
-		return c.closeWithErr(CloseMistachedPayloadData)
-	case errors.Is(err, ErrBadMessage):
-		return c.closeWithErr(CloseProtocolError)
-	default:
-		return CloseFrame, nil, err
-	}
-}
-
-func (c *Conn) handleTextMessage(h *Headers) (payload []byte, err error) {
-	payload, err = c.readPayload(h.PayloadLength)
+func (c *Conn) handleTextMessage(h *Headers) ([]byte, error) {
+	payload, err := c.readPayload(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -83,14 +69,14 @@ func (c *Conn) handleTextMessage(h *Headers) (payload []byte, err error) {
 		toggleMask(payload, h.MaskingKey)
 	}
 	// check if valid utf-8 payload
-	if !utf8.Valid(payload) {
-		return payload, ErrUtf8
-	}
-	return
+	// if !utf8.Valid(payload) {
+	// 	return payload, ErrUtf8
+	// }
+	return payload, nil
 }
 
-func (c *Conn) handleBinaryMessage(h *Headers) (payload []byte, err error) {
-	payload, err = c.readPayload(h.PayloadLength)
+func (c *Conn) handleBinaryMessage(h *Headers) ([]byte, error) {
+	payload, err := c.readPayload(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -98,22 +84,22 @@ func (c *Conn) handleBinaryMessage(h *Headers) (payload []byte, err error) {
 	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
 	}
-	return
+	return payload, nil
 }
 
-func (c *Conn) handleCloseFrame(h *Headers) (payload []byte, err error) {
+func (c *Conn) handleCloseFrame(h *Headers) ([]byte, error) {
 	// If no payload then it's a Close with no status or reason
 	if h.PayloadLength == 0 {
-		_, _ = c.sendControl(CloseFrame, CloseNormal, payload)
-		return payload, ErrNormalClose
+		_, _ = c.sendControl(CloseFrame, CloseNormal, nil)
+		return nil, ErrNormalClose
 	}
 	// payload length must be atleast 2 and not bigger than 125 (status code)
 	if h.PayloadLength < 2 || h.PayloadLength > maxControlFramePayloadSize {
-		return payload, ErrBadMessage
+		return nil, ErrBadMessage
 	}
 
 	// read status code
-	payload, err = c.readPayload(h.PayloadLength)
+	payload, err := c.readPayload(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -146,8 +132,17 @@ func (c *Conn) handleCloseFrame(h *Headers) (payload []byte, err error) {
 	return payload, ErrNormalClose
 }
 
-func (c *Conn) handlePingFrame(h *Headers) (payload []byte, err error) {
-	payload, err = c.readPayload(h.PayloadLength)
+func (c *Conn) handlePingFrame(h *Headers) ([]byte, error) {
+	// payload length must not be bigger than 125
+	if h.PayloadLength > maxControlFramePayloadSize {
+		return nil, ErrBadMessage
+	}
+	// ping shouldn't be fragmented
+	if !h.FIN {
+		return nil, ErrBadMessage
+	}
+
+	payload, err := c.readPayload(h.PayloadLength)
 	if err != nil {
 		return payload, err
 	}
@@ -161,10 +156,28 @@ func (c *Conn) handlePingFrame(h *Headers) (payload []byte, err error) {
 		return payload, err
 	}
 
-	return
+	return payload, nil
 }
 
-func (c *Conn) handleSingleFrame(h *Headers) (payload []byte, err error) {
+func (c *Conn) handlePongFrame(h *Headers) ([]byte, error) {
+	// payload length must not be bigger than 125
+	if h.PayloadLength > maxControlFramePayloadSize {
+		return nil, ErrBadMessage
+	}
+	// pong shouldn't be fragmented
+	if !h.FIN {
+		return nil, ErrBadMessage
+	}
+
+	payload, err := c.readPayload(h.PayloadLength)
+	if err != nil {
+		return payload, err
+	}
+
+	return payload, nil
+}
+
+func (c *Conn) handleSingleFrame(h *Headers) ([]byte, error) {
 	switch h.Opcode {
 	case TextMessage:
 		return c.handleTextMessage(h)
@@ -178,10 +191,23 @@ func (c *Conn) handleSingleFrame(h *Headers) (payload []byte, err error) {
 	case PingFrame:
 		return c.handlePingFrame(h)
 	case PongFrame:
-		return
+		return c.handlePongFrame(h)
 	default:
 		// Unhandled Opcode
-		return payload, ErrBadMessage
+		return nil, ErrBadMessage
+	}
+}
+
+func (c *Conn) handleSingleMessageErr(err error) (Opcode, []byte, error) {
+	switch {
+	case isEOF(err):
+		return CloseFrame, nil, ErrUnexpectedClose
+	case errors.Is(err, ErrUtf8):
+		return c.closeWithErr(CloseMistachedPayloadData)
+	case errors.Is(err, ErrBadMessage):
+		return c.closeWithErr(CloseProtocolError)
+	default:
+		return CloseFrame, nil, err
 	}
 }
 
@@ -213,15 +239,15 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 		if initialHeaders.Opcode == PingFrame || initialHeaders.Opcode == PongFrame {
 			continue
 		}
-		// illegal ContinuationFrame
+
 		if initialHeaders.Opcode == ContinuationFrame {
 			return c.closeWithErr(CloseProtocolError)
 		}
-
 		// Single frame
 		if initialHeaders.FIN {
 			return initialHeaders.Opcode, initialPayload, nil
 		}
+
 		// Fragmented frames
 		for {
 			nextHeaders, err := c.parseFrameHeaders()
@@ -229,9 +255,9 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 				return CloseFrame, nil, ErrUnexpectedClose
 			}
 
-			// skip this frame if control frame
-			if nextHeaders.Opcode == PingFrame || nextHeaders.Opcode == PongFrame {
-				continue
+			// illegal ContinuationFrame
+			if nextHeaders.Opcode != ContinuationFrame && nextHeaders.Opcode != CloseFrame && nextHeaders.Opcode != PingFrame && nextHeaders.Opcode != PongFrame {
+				return c.closeWithErr(CloseProtocolError)
 			}
 
 			nextPayload, err := c.handleSingleFrame(nextHeaders)
@@ -239,9 +265,9 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 				return c.handleSingleMessageErr(err)
 			}
 
-			// illegal text/binary frame
-			if nextHeaders.Opcode != ContinuationFrame {
-				return c.closeWithErr(CloseProtocolError)
+			// skip this frame if control frame
+			if nextHeaders.Opcode == PingFrame || nextHeaders.Opcode == PongFrame {
+				continue
 			}
 
 			if initialHeaders.Opcode == TextMessage && !utf8.Valid(nextPayload) {
@@ -290,17 +316,19 @@ func (c *Conn) sendControl(mt Opcode, status uint16, reason []byte) (int, error)
 	}
 
 	// encode status code
-	var payload []byte
+	payload := make([]byte, 0)
 	if mt == CloseFrame {
 		statusBuf := make([]byte, 2)
 		binary.BigEndian.PutUint16(statusBuf, uint16(status))
 		payload = append(payload, statusBuf...)
 	}
 	// append reason
-	payload = append(payload, reason...)
+	if len(reason) > 0 {
+		payload = append(payload, reason...)
+	}
 
 	// Mask if we're a client
-	if !c.isServer && len(payload) > 0 {
+	if !c.isServer {
 		maskingKey := makeMaskingKey()
 		headers.MaskingKey = maskingKey
 		toggleMask(payload, maskingKey)
@@ -325,17 +353,11 @@ func (c *Conn) closeWithErr(code uint16) (Opcode, []byte, error) {
 	if isEOF(err) {
 		return CloseFrame, nil, ErrUnexpectedClose
 	}
-	// close tcp connection
-	c.Close()
 	return CloseFrame, nil, ErrBadMessage
 }
 
 // Close writes the websocket close frame,
 // flushes the buffer and closes the underlying connections.
 func (c *Conn) Close() {
-	// TODO: write Close frame
-
-	if c.netConn != nil {
-		c.netConn.Close()
-	}
+	c.netConn.Close()
 }

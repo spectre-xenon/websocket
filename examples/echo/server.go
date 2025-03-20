@@ -8,7 +8,6 @@ import (
 )
 
 var upgrader = &websocket.Upgrader{
-	Subprotocols: []string{"ass"},
 	CheckOrigin: func(r *http.Request) bool {
 		// Accept connection from any origin
 		return true

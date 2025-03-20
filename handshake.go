@@ -132,7 +132,7 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	// Clean connection if error happens
 	defer func() {
 		if netConn != nil {
-			// Safe because wew set the netConn variable to nil before returning.
+			// Safe because we set the netConn variable to nil before returning.
 			netConn.Close()
 		}
 	}()
