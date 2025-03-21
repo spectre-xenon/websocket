@@ -127,6 +127,27 @@ type Headers struct {
 	MaskingKey []byte
 }
 
+func isPingPongFrame(o Opcode) bool {
+	if o == PingFrame || o == PongFrame {
+		return true
+	}
+	return false
+}
+
+func isControlFrame(o Opcode) bool {
+	if o == PingFrame || o == PongFrame || o == CloseFrame {
+		return true
+	}
+	return false
+}
+
+func isDataFrame(o Opcode) bool {
+	if o == TextMessage || o == BinaryMessage {
+		return true
+	}
+	return false
+}
+
 func (c *Conn) parseFrameHeaders() (*Headers, error) {
 	buf, err := c.read(2)
 	if err != nil {

@@ -227,7 +227,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 		}
 
 		// skip this frame if control frame
-		if initialHeaders.Opcode == PingFrame || initialHeaders.Opcode == PongFrame {
+		if isPingPongFrame(initialHeaders.Opcode) {
 			continue
 		}
 
@@ -247,7 +247,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 			}
 
 			// illegal ContinuationFrame
-			if nextHeaders.Opcode != ContinuationFrame && nextHeaders.Opcode != CloseFrame && nextHeaders.Opcode != PingFrame && nextHeaders.Opcode != PongFrame {
+			if nextHeaders.Opcode != ContinuationFrame && !isControlFrame(nextHeaders.Opcode) {
 				return c.closeWithErr(CloseProtocolError)
 			}
 
@@ -257,7 +257,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 			}
 
 			// skip this frame if control frame
-			if nextHeaders.Opcode == PingFrame || nextHeaders.Opcode == PongFrame {
+			if isPingPongFrame(nextHeaders.Opcode) {
 				continue
 			}
 
