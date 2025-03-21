@@ -3,6 +3,7 @@ package websocket
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -277,6 +278,19 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 	}
 }
 
+func (c *Conn) NextJSON(v any) error {
+	_, payload, err := c.NextMessage()
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(payload, v)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 	if mt != TextMessage && mt != BinaryMessage {
 		return 0, ErrInvalidMessageType
@@ -297,6 +311,18 @@ func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 	}
 
 	return n, nil
+}
+
+func (c *Conn) SendJSON(v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = c.SendMessage(payload, TextMessage)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Conn) sendControl(mt Opcode, status uint16, reason []byte) (int, error) {

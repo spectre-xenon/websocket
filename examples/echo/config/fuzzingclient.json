@@ -6,6 +6,7 @@
   "options": { "failByDrop": false },
   "servers": [
     {
+      "agent": "spectre-xenon/websocket",
       "url": "ws://host.docker.internal:8080"
     }
   ]
