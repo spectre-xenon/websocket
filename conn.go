@@ -381,6 +381,11 @@ func (c *Conn) closeWithErr(code uint16) (Opcode, []byte, error) {
 	return CloseFrame, nil, err
 }
 
+func (c *Conn) Subprotocol() string {
+
+	return c.subprotocol
+}
+
 // Close writes the websocket close frame,
 // flushes the buffer and closes the underlying connections.
 func (c *Conn) Close() {
