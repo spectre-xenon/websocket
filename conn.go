@@ -11,20 +11,20 @@ import (
 )
 
 type Conn struct {
-	netConn  net.Conn
-	isServer bool
+	netConn net.Conn
 
 	br *bufio.Reader
 	bw *bufio.Writer
 
+	isServer    bool
 	subprotocol string
 }
 
 var (
 	ErrInvalidMessageType = errors.New("websocket: Specified message must be TextMessage or BinaryMessage")
-	ErrBadMessage         = errors.New("websocket: Received a message that violates the websocket protocol")
-	ErrUtf8               = errors.New("websocket: Received a TextMessage that contains invalid utf-8")
-	ErrNormalClose        = errors.New("websocket: Peer disconnected normally")
+	ErrBadMessage         = errors.New("websocket: close 1002 (Protocol violation)")
+	ErrUtf8               = errors.New("websocket: close 1007 (Invalid UTF-8 character)")
+	ErrNormalClose        = errors.New("websocket: close 1000 (Normal)")
 	ErrUnexpectedClose    = errors.New("websocket: Peer disconnected unexpectedly")
 )
 
@@ -189,7 +189,7 @@ func (c *Conn) handleSingleFrame(h *Headers) ([]byte, error) {
 	}
 }
 
-func (c *Conn) handleSingleMessageErr(err error) (Opcode, []byte, error) {
+func (c *Conn) handleSingleFrameErr(err error) (Opcode, []byte, error) {
 	switch {
 	case isEOF(err):
 		return CloseFrame, nil, ErrUnexpectedClose
@@ -223,7 +223,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 		// initial message payload
 		initialPayload, err := c.handleSingleFrame(initialHeaders)
 		if err != nil {
-			return c.handleSingleMessageErr(err)
+			return c.handleSingleFrameErr(err)
 		}
 
 		// skip this frame if control frame
@@ -253,7 +253,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 
 			nextPayload, err := c.handleSingleFrame(nextHeaders)
 			if err != nil {
-				return c.handleSingleMessageErr(err)
+				return c.handleSingleFrameErr(err)
 			}
 
 			// skip this frame if control frame
@@ -366,11 +366,19 @@ func (c *Conn) sendControl(mt Opcode, status uint16, reason []byte) (int, error)
 }
 
 func (c *Conn) closeWithErr(code uint16) (Opcode, []byte, error) {
-	_, err := c.sendControl(CloseFrame, code, nil)
+	var err error
+	_, err = c.sendControl(CloseFrame, code, nil)
 	if isEOF(err) {
 		return CloseFrame, nil, ErrUnexpectedClose
 	}
-	return CloseFrame, nil, ErrBadMessage
+
+	if code == CloseMistachedPayloadData {
+		err = ErrUtf8
+	} else {
+		err = ErrBadMessage
+	}
+
+	return CloseFrame, nil, err
 }
 
 // Close writes the websocket close frame,
