@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"bufio"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,10 @@ import (
 // The Upgrader used to validate the handshake
 // and upgrade the connection.
 type Upgrader struct {
+	// ReadBufferSize used for size when making bufio read buffers,
+	// if not assigned the default buffer size is 4KB.
+	ReadBufferSize int
+
 	// The fuction used to validate request origin.
 	// Check the origin carefully to prevent cross-site request forgery.
 	CheckOrigin func(r *http.Request) bool
@@ -125,7 +130,7 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	// TODO: add extension handling
 
 	// Hijack connection
-	netConn, bufrw, err := http.NewResponseController(w).Hijack()
+	netConn, _, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("websocket: error while hijacking: %s", err)
 	}
@@ -157,10 +162,18 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	// Write handshake directly
 	netConn.Write(handshake)
 
+	// create buffer reader
+	var br *bufio.Reader
+	if u.ReadBufferSize != 0 {
+		br = bufio.NewReaderSize(netConn, u.ReadBufferSize)
+	} else {
+		// default size is 4KB
+		br = bufio.NewReader(netConn)
+	}
+
 	conn := &Conn{
 		netConn:     netConn,
-		br:          bufrw.Reader,
-		bw:          bufrw.Writer,
+		br:          br,
 		subprotocol: subprotocol,
 		isServer:    true,
 	}

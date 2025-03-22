@@ -17,6 +17,10 @@ var (
 )
 
 type Dialer struct {
+	// ReadBufferSize used for size when making bufio read buffers,
+	// if not assigned the default buffer size is 4KB.
+	ReadBufferSize int
+
 	// Subprotocols is the client's supported protocols in order of prefernce.
 	// if no Subprotocols is specified then no protocol is negotiated during handshake.
 	Subprotocols []string
@@ -110,7 +114,7 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 	}
 
 	// dial url
-	netConn, err := netDial(u)
+	netConn, err := d.netDial(u)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -130,7 +134,13 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 
 	// read handshake response
 	// TODO: make buffer size set by user
-	br := bufio.NewReaderSize(netConn, 4096)
+	var br *bufio.Reader
+	if d.ReadBufferSize != 0 {
+		br = bufio.NewReaderSize(netConn, d.ReadBufferSize)
+	} else {
+		// default size is 4KB
+		br = bufio.NewReader(netConn)
+	}
 	res, err := http.ReadResponse(br, &req)
 	if err != nil {
 		return nil, nil, err
