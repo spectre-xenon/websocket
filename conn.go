@@ -14,10 +14,11 @@ type Conn struct {
 	netConn net.Conn
 
 	br *bufio.Reader
-	bw *bufio.Writer
 
 	isServer    bool
 	subprotocol string
+
+	closed bool
 }
 
 var (
@@ -79,6 +80,11 @@ func (c *Conn) handleBinaryMessage(h *Headers) ([]byte, error) {
 }
 
 func (c *Conn) handleCloseFrame(h *Headers) ([]byte, error) {
+	// close close connection at last
+	defer func() {
+		c.closed = true
+		c.netConn.Close()
+	}()
 	// If no payload then it's a Close with no status or reason
 	if h.PayloadLength == 0 {
 		_, _ = c.sendControl(CloseFrame, CloseNormal, nil)
@@ -296,12 +302,18 @@ func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 		return 0, ErrInvalidMessageType
 	}
 
+	maskingKey := makeMaskingKey()
 	buf := makeFrameHeadersBuf(&Headers{
 		FIN:           true,
 		Opcode:        mt,
 		PayloadLength: uint64(len(payload)),
 		Mask:          !c.isServer,
+		MaskingKey:    maskingKey,
 	})
+
+	if !c.isServer {
+		toggleMask(payload, maskingKey)
+	}
 
 	buf = append(buf, payload...)
 
@@ -378,16 +390,24 @@ func (c *Conn) closeWithErr(code uint16) (Opcode, []byte, error) {
 		err = ErrBadMessage
 	}
 
+	c.closed = true
+	c.netConn.Close()
 	return CloseFrame, nil, err
 }
 
 func (c *Conn) Subprotocol() string {
-
 	return c.subprotocol
 }
 
 // Close writes the websocket close frame,
 // flushes the buffer and closes the underlying connections.
 func (c *Conn) Close() {
-	c.netConn.Close()
+	if !c.closed {
+		if c.isServer {
+			c.sendControl(CloseFrame, CloseGoingAway, nil)
+		} else {
+			c.sendControl(CloseFrame, CloseNormal, nil)
+		}
+		c.netConn.Close()
+	}
 }
