@@ -91,6 +91,24 @@ func splitHeaderValuesBySpace(strList []string) []string {
 	return splitted
 }
 
+// TODO: add docs
+func checkDuplicateHeaders(headers http.Header, toCheck []string) bool {
+	for _, h := range toCheck {
+		values := headers.Values(h)
+		if len(values) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func makeKey() string {
+	challangeKey := make([]byte, 16)
+	// Never returns an error
+	_, _ = rand.Read(challangeKey)
+	return base64.StdEncoding.EncodeToString(challangeKey)
+}
+
 // Validates that the challange key is 16 bytes in length when decoded.
 func isValidKey(key string) bool {
 	if key == "" {
