@@ -22,6 +22,9 @@ type Upgrader struct {
 	// Subprotocols is the server's supported protocols in order of prefernce.
 	// if no Subprotocols is specified then no protocol is negotiated during handshake.
 	Subprotocols []string
+
+	// enableCompression is wether to negotiate per-message deflate extension or not.
+	CompressionConfig CompressionConfig
 }
 
 // checkSameOrigin checks if the origin matchs the host.
@@ -128,6 +131,17 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	subprotocol := u.selectSubprotocol(r.Header)
 
 	// TODO: add extension handling
+	exts := parseExtHeader(r.Header)
+	isFlate, isServerNoTakeover, isClientNoTakeover := isFlateIsTakeover(exts)
+	cc := &CompressionConfig{
+		Enabled:              u.CompressionConfig.Enabled,
+		IsContextTakeover:    u.CompressionConfig.IsContextTakeover,
+		CompressionLevel:     u.CompressionConfig.CompressionLevel,
+		CompressionThreshold: u.CompressionConfig.CompressionThreshold,
+	}
+	if u.CompressionConfig.Enabled && isServerNoTakeover {
+		cc.IsContextTakeover = false
+	}
 
 	// Hijack connection
 	netConn, _, err := http.NewResponseController(w).Hijack()
@@ -155,6 +169,12 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 		handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", subprotocol)...)
 	}
 	// TODO: add extension handling
+	if u.CompressionConfig.Enabled && isFlate {
+		headers := makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover)
+		handshake = append(handshake, headers...)
+	} else {
+		cc.Enabled = false
+	}
 
 	// Required empty line
 	handshake = append(handshake, "\r\n"...)
@@ -171,12 +191,7 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 		br = bufio.NewReader(netConn)
 	}
 
-	conn := &Conn{
-		netConn:     netConn,
-		br:          br,
-		subprotocol: subprotocol,
-		isServer:    true,
-	}
+	conn := newConn(netConn, br, cc, subprotocol, true)
 
 	// Unset netConn
 	netConn = nil

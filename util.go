@@ -64,6 +64,96 @@ func checkDuplicateHeaders(headers http.Header, toCheck []string) bool {
 	return false
 }
 
+type extension struct {
+	name   string
+	params []string
+}
+
+func parseExtHeader(h http.Header) []extension {
+	exts := make([]extension, 0)
+
+	headerValue := h.Get("Sec-WebSocket-Extensions")
+	if headerValue == "" {
+		return exts
+	}
+
+	extsStr := strings.Split(headerValue, ",")
+	// trim space
+	for i := range extsStr {
+		extsStr[i] = strings.TrimSpace(extsStr[i])
+	}
+
+	for _, extStr := range extsStr {
+		extParams := strings.Split(extStr, ";")
+		// trim space
+		for i := range extParams {
+			extParams[i] = strings.TrimSpace(extParams[i])
+		}
+
+		name := extParams[0]
+		var ext extension
+		if len(extParams) == 1 {
+			ext = extension{
+				name: name,
+			}
+		} else {
+			ext = extension{
+				name:   name,
+				params: extParams[1:],
+			}
+		}
+
+		exts = append(exts, ext)
+	}
+
+	return exts
+}
+
+func isFlateIsTakeover(exts []extension) (bool, bool, bool) {
+	// check if defalte extension exits and if we're using context_takeover,
+	// we don't check for max bit cause we can't adjust defalte window.
+exts:
+	for _, ext := range exts {
+		isServerNoTakeover := false
+		isClientNoTakeover := false
+
+		if ext.name != "permessage-deflate" {
+			continue
+		}
+
+		for _, p := range ext.params {
+			switch {
+			case p == "client_no_context_takeover":
+				isServerNoTakeover = true
+				continue
+			case p == "server_no_context_takeover":
+				isClientNoTakeover = true
+				continue
+			case p == "server_max_window_bits=15" || p == "client_max_window_bits":
+				continue
+			case strings.HasPrefix(p, "client_max_window_bits="):
+				continue
+			default:
+				continue exts
+			}
+		}
+		return true, isServerNoTakeover, isClientNoTakeover
+	}
+	return false, false, false
+}
+
+func makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover bool) string {
+	ext := "Sec-WebSocket-Extensions: permessage-deflate"
+	if isServerNoTakeover {
+		ext += "; client_no_context_takeover"
+	}
+	if isClientNoTakeover {
+		ext += "; server_no_context_takeover"
+	}
+	ext += "\r\n"
+	return ext
+}
+
 func makeKey() string {
 	challangeKey := make([]byte, 16)
 	// Never returns an error

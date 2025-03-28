@@ -18,7 +18,35 @@ type Conn struct {
 	isServer    bool
 	subprotocol string
 
+	flatter *flatter
+	cc      *CompressionConfig
+
 	closed bool
+}
+
+func newConn(netConn net.Conn, br *bufio.Reader, cc *CompressionConfig, subprotocol string, isServer bool) *Conn {
+	var flatter *flatter
+	if cc.Enabled {
+		flatter = NewFlatter(cc)
+	}
+
+	// compresion threshold default if not set
+	if cc.Enabled && cc.CompressionThreshold <= 0 {
+		if cc.IsContextTakeover {
+			cc.CompressionThreshold = 128
+		} else {
+			cc.CompressionThreshold = 512
+		}
+	}
+
+	return &Conn{
+		netConn:     netConn,
+		br:          br,
+		isServer:    isServer,
+		subprotocol: subprotocol,
+		flatter:     flatter,
+		cc:          cc,
+	}
 }
 
 var (
@@ -60,6 +88,13 @@ func (c *Conn) handleTextMessage(h *Headers) ([]byte, error) {
 	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
 	}
+	// handle compression
+	if h.FIN && c.cc.Enabled && h.RSV1 {
+		payload, err = c.flatter.InFlate(payload)
+		if err != nil {
+			return payload, err
+		}
+	}
 	// check if valid utf-8 payload if we're not a fragmented message
 	if h.FIN && !utf8.Valid(payload) {
 		return payload, ErrUtf8
@@ -75,6 +110,13 @@ func (c *Conn) handleBinaryMessage(h *Headers) ([]byte, error) {
 	// toggle mask if we're a server
 	if c.isServer {
 		toggleMask(payload, h.MaskingKey)
+	}
+	// handle compression
+	if h.FIN && c.cc.Enabled && h.RSV1 {
+		payload, err = c.flatter.InFlate(payload)
+		if err != nil {
+			return payload, err
+		}
 	}
 	return payload, nil
 }
@@ -92,6 +134,14 @@ func (c *Conn) handleCloseFrame(h *Headers) ([]byte, error) {
 	}
 	// payload length must be atleast 2 and not bigger than 125 (status code)
 	if h.PayloadLength < 2 || h.PayloadLength > maxControlFramePayloadSize {
+		return nil, ErrBadMessage
+	}
+	// pong shouldn't be fragmented
+	if !h.FIN {
+		return nil, ErrBadMessage
+	}
+	// no compression allowed in control messages
+	if h.RSV1 {
 		return nil, ErrBadMessage
 	}
 
@@ -138,6 +188,10 @@ func (c *Conn) handlePingFrame(h *Headers) ([]byte, error) {
 	if !h.FIN {
 		return nil, ErrBadMessage
 	}
+	// no compression allowed in control messages
+	if h.RSV1 {
+		return nil, ErrBadMessage
+	}
 
 	payload, err := c.read(h.PayloadLength)
 	if err != nil {
@@ -165,6 +219,10 @@ func (c *Conn) handlePongFrame(h *Headers) ([]byte, error) {
 	if !h.FIN {
 		return nil, ErrBadMessage
 	}
+	// no compression allowed in control messages
+	if h.RSV1 {
+		return nil, ErrBadMessage
+	}
 
 	payload, err := c.read(h.PayloadLength)
 	if err != nil {
@@ -178,10 +236,8 @@ func (c *Conn) handleSingleFrame(h *Headers) ([]byte, error) {
 	switch h.Opcode {
 	case TextMessage:
 		return c.handleTextMessage(h)
-	case BinaryMessage:
-		return c.handleBinaryMessage(h)
-	case ContinuationFrame:
-		// Same as binary message handling
+	case BinaryMessage, ContinuationFrame:
+		// same handling of both
 		return c.handleBinaryMessage(h)
 	case CloseFrame:
 		return c.handleCloseFrame(h)
@@ -208,6 +264,16 @@ func (c *Conn) handleSingleFrameErr(err error) (Opcode, []byte, error) {
 	}
 }
 
+func (c *Conn) checkRSV1(h *Headers) bool {
+	if !c.cc.Enabled {
+		return true
+	}
+	if h.Opcode != TextMessage && h.Opcode != BinaryMessage {
+		return true
+	}
+	return false
+}
+
 func (c *Conn) NextMessage() (Opcode, []byte, error) {
 	// loop and ignore control message (eg. PING PONG)
 	for {
@@ -217,7 +283,8 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 		}
 
 		// Check reserved bits
-		if initialHeaders.RSV1 || initialHeaders.RSV2 || initialHeaders.RSV3 {
+		if initialHeaders.RSV1 && c.checkRSV1(initialHeaders) ||
+			initialHeaders.RSV2 || initialHeaders.RSV3 {
 			return c.closeWithErr(CloseProtocolError)
 		}
 
@@ -257,6 +324,12 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 				return c.closeWithErr(CloseProtocolError)
 			}
 
+			// handle RSV1
+			if !initialHeaders.RSV1 && nextHeaders.RSV1 {
+				println("here")
+				return c.closeWithErr(CloseProtocolError)
+			}
+
 			nextPayload, err := c.handleSingleFrame(nextHeaders)
 			if err != nil {
 				return c.handleSingleFrameErr(err)
@@ -272,6 +345,13 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 
 			if nextHeaders.FIN {
 				break
+			}
+		}
+
+		if c.cc.Enabled && initialHeaders.RSV1 {
+			initialPayload, err = c.flatter.InFlate(initialPayload)
+			if err != nil {
+				return c.closeWithErr(CloseInternalServerErr)
 			}
 		}
 
@@ -302,9 +382,23 @@ func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 		return 0, ErrInvalidMessageType
 	}
 
+	shouldCompress := false
+	if c.cc.Enabled && len(payload) > c.cc.CompressionThreshold {
+		shouldCompress = true
+	}
+
+	if shouldCompress {
+		deflatted, err := c.flatter.DeFlate(payload)
+		if err != nil {
+			return 0, err
+		}
+		payload = deflatted
+	}
+
 	maskingKey := makeMaskingKey()
 	buf := makeFrameHeadersBuf(&Headers{
 		FIN:           true,
+		RSV1:          shouldCompress,
 		Opcode:        mt,
 		PayloadLength: uint64(len(payload)),
 		Mask:          !c.isServer,
@@ -409,5 +503,9 @@ func (c *Conn) Close() {
 			c.sendControl(CloseFrame, CloseNormal, nil)
 		}
 		c.netConn.Close()
+	}
+
+	if c.flatter != nil {
+		c.flatter.Close()
 	}
 }
