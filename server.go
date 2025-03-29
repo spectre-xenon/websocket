@@ -59,7 +59,15 @@ func (u *Upgrader) selectSubprotocol(headers http.Header) string {
 	return ""
 }
 
-// TODO: add docs
+// Upgrade validates incoming http requests for correct webscoket handshake
+// and handles any invalid request with a proper http response.
+//
+// If the handshake was sucessful [Upgrade] returns [*Conn] represnting a websocket connection.
+//
+// If you want to handle responsing to the http request yourself when the handshake fails
+// see [Upgrader.UpgradeNoResponse]
+//
+// Note that any authenication should be handled before upgrading the connection.
 func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 	ws, code, err := u.upgradeConnection(w, r)
 	if err != nil {
@@ -71,7 +79,8 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 	return ws, nil
 }
 
-// TODO: add docs
+// UpgradeNoResponse is same as [Upgrader.Upgrade] except it doesn't responed to the http request
+// and just returns the recommend http request to responed with.
 func (u *Upgrader) UpgradeNoResponse(w http.ResponseWriter, r *http.Request) (*Conn, int, error) {
 	ws, code, err := u.upgradeConnection(w, r)
 	if err != nil {
@@ -130,7 +139,6 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	// Select a subprotocol (if exists)
 	subprotocol := u.selectSubprotocol(r.Header)
 
-	// TODO: add extension handling
 	exts := parseExtHeader(r.Header)
 	isFlate, isServerNoTakeover, isClientNoTakeover := isFlateIsTakeover(exts)
 	cc := &CompressionConfig{
@@ -168,7 +176,6 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	if subprotocol != "" {
 		handshake = append(handshake, fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", subprotocol)...)
 	}
-	// TODO: add extension handling
 	if u.CompressionConfig.Enabled && isFlate {
 		ext := makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover)
 		handshake = append(handshake, "Sec-WebSocket-Extensions: "+ext...)

@@ -107,12 +107,17 @@ func putSlidingWindow(sw *slidingWindow) {
 }
 
 type CompressionConfig struct {
-	Enabled           bool
+	// Nogtiate compression during the handshake
+	Enabled bool
+	// Nogtiate Context takeover during the handshake
 	IsContextTakeover bool
 	// CompressionLevel is used in the compress/flate package
 	// if using contextTakeover the recommended level is [flate.DefaultCompression]
-	// to make use of the sliding window
-	CompressionLevel     int
+	// to make use of the sliding window.
+	CompressionLevel int
+	// Threshold that if the payload length exceeds it gets compressed
+	// the default for for IsContextTakeover is 128,
+	// default without IsContextTakeover is 512
 	CompressionThreshold int
 }
 

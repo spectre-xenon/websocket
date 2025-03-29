@@ -40,11 +40,16 @@ type Dialer struct {
 	CookieJar http.CookieJar
 }
 
+// Dial is helper function that creates a [Dialer] and dials the websocket connection
 func Dial(urlStr string) (*Conn, *http.Response, error) {
 	dialer := Dialer{}
 	return dialer.Dial(urlStr)
 }
 
+// Dial connects to the weboscket url handles the handshake and returns a [*Conn] representing
+// a websocket connection or an error if the handshake fails.
+//
+// Dial also returns the http response from the handshake if you want to do something with it.
 func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
@@ -107,7 +112,6 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 	if len(d.Subprotocols) > 0 {
 		req.Header["Sec-WebSocket-Protocol"] = []string{strings.Join(d.Subprotocols, ", ")}
 	}
-	// TODO: add compress extension
 	if d.CompressionConfig.Enabled {
 		req.Header["Sec-WebSocket-Extensions"] = []string{
 			makeFlateExtHeader(!d.CompressionConfig.IsContextTakeover, false),

@@ -274,6 +274,12 @@ func (c *Conn) checkRSV1(h *Headers) bool {
 	return false
 }
 
+// NextMessage blocks until it receives a websocket frame of type [TextMessage] or [BinaryMessage],
+//
+// It also handles any control frames in between like [PongFrame],[PingFrame] or [CloseFrame]
+//
+// It returns the Message Type, payload of the message and an err if the peer disconnects unexpectedly
+// or if it receives a [CloseFrame]
 func (c *Conn) NextMessage() (Opcode, []byte, error) {
 	// loop and ignore control message (eg. PING PONG)
 	for {
@@ -364,6 +370,7 @@ func (c *Conn) NextMessage() (Opcode, []byte, error) {
 	}
 }
 
+// NextJSON is helper function that Unmarshals the next message directly to a struct
 func (c *Conn) NextJSON(v any) error {
 	_, payload, err := c.NextMessage()
 	if err != nil {
@@ -377,6 +384,12 @@ func (c *Conn) NextJSON(v any) error {
 	return nil
 }
 
+// SendMessage sends a message of a given type with a payload to the peer.
+//
+// The only allowed types here are [TextMessage] and [BinaryMessage],
+// this function errors if it receives any other message type.
+//
+// It also returns an error if a peer disconnects unexpectedly.
 func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 	if mt != TextMessage && mt != BinaryMessage {
 		return 0, ErrInvalidMessageType
@@ -419,6 +432,7 @@ func (c *Conn) SendMessage(payload []byte, mt Opcode) (int, error) {
 	return n, nil
 }
 
+// SendJSON is helper function that Marshals the struct and sends it to the peer.
 func (c *Conn) SendJSON(v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
@@ -494,7 +508,7 @@ func (c *Conn) Subprotocol() string {
 }
 
 // Close writes the websocket close frame,
-// flushes the buffer and closes the underlying connections.
+// and closes the underlying connections.
 func (c *Conn) Close() {
 	if !c.closed {
 		if c.isServer {
