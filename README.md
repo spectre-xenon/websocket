@@ -39,10 +39,4 @@ go get github.com/spectre-xenon/websocket
 5. Push branch (`git push origin feature`)
 6. Open Pull Request
 
-## License 📄
-
-MIT License - See [LICENSE](LICENSE) for details.
-
----
-
 [^1]: the only thing currently not supportted is setting the server_max_window_bits as this is not supported in the `compress/flate` package
