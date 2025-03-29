@@ -32,6 +32,9 @@ type Dialer struct {
 	// headers MUST NOT include any websocket reserved headers.
 	Headers http.Header
 
+	// enableCompression is wether to negotiate per-message deflate extension or not.
+	CompressionConfig CompressionConfig
+
 	// CookieJar used to hold cookies to be sent during the initial handshake
 	// like cookies for auth (sessions, JWT's, ...)
 	CookieJar http.CookieJar
@@ -105,6 +108,11 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 		req.Header["Sec-WebSocket-Protocol"] = []string{strings.Join(d.Subprotocols, ", ")}
 	}
 	// TODO: add compress extension
+	if d.CompressionConfig.Enabled {
+		req.Header["Sec-WebSocket-Extensions"] = []string{
+			makeFlateExtHeader(!d.CompressionConfig.IsContextTakeover, false),
+		}
+	}
 
 	// add cookies
 	if d.CookieJar != nil {
@@ -133,7 +141,6 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 	}
 
 	// read handshake response
-	// TODO: make buffer size set by user
 	var br *bufio.Reader
 	if d.ReadBufferSize != 0 {
 		br = bufio.NewReaderSize(netConn, d.ReadBufferSize)
@@ -168,19 +175,23 @@ func (d *Dialer) Dial(urlStr string) (*Conn, *http.Response, error) {
 	}
 
 	// extension
-	// TODO: add compression
-	ext := res.Header.Get("Sec-WebSocket-Extensions")
-	if ext != "" {
-		return nil, nil, ErrHandshake
+	exts := parseExtHeader(res.Header)
+	isFlate, _, isClientNoTakeover := isFlateIsTakeover(exts)
+	cc := &CompressionConfig{
+		Enabled:              d.CompressionConfig.Enabled,
+		IsContextTakeover:    d.CompressionConfig.IsContextTakeover,
+		CompressionLevel:     d.CompressionConfig.CompressionLevel,
+		CompressionThreshold: d.CompressionConfig.CompressionThreshold,
 	}
 
-	// finalize
-	conn := &Conn{
-		netConn:     netConn,
-		br:          br,
-		subprotocol: subprotocol,
-		// TODO: add subprotocol
+	if !isFlate {
+		cc.Enabled = false
 	}
+	if d.CompressionConfig.Enabled && isClientNoTakeover {
+		cc.IsContextTakeover = false
+	}
+
+	conn := newConn(netConn, br, cc, subprotocol, false)
 
 	// Unset netConn
 	netConn = nil

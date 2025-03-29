@@ -143,7 +143,7 @@ exts:
 }
 
 func makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover bool) string {
-	ext := "Sec-WebSocket-Extensions: permessage-deflate"
+	ext := "permessage-deflate"
 	if isServerNoTakeover {
 		ext += "; client_no_context_takeover"
 	}

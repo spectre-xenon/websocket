@@ -170,8 +170,8 @@ func (u *Upgrader) upgradeConnection(w http.ResponseWriter, r *http.Request) (*C
 	}
 	// TODO: add extension handling
 	if u.CompressionConfig.Enabled && isFlate {
-		headers := makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover)
-		handshake = append(handshake, headers...)
+		ext := makeFlateExtHeader(isServerNoTakeover, isClientNoTakeover)
+		handshake = append(handshake, "Sec-WebSocket-Extensions: "+ext...)
 	} else {
 		cc.Enabled = false
 	}

@@ -9,10 +9,16 @@ import (
 	"github.com/spectre-xenon/websocket"
 )
 
-func main() {
-	dialer := websocket.Dialer{}
+var dialer = &websocket.Dialer{
+	CompressionConfig: websocket.CompressionConfig{
+		Enabled: true,
+		// force compression
+		CompressionThreshold: 1,
+	},
+}
 
-	ws, _, err := dialer.Dial("wss://localhost:8080")
+func main() {
+	ws, _, err := dialer.Dial("ws://localhost:8080")
 	if err != nil {
 		fmt.Println(err)
 		return

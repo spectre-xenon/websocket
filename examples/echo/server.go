@@ -1,7 +1,6 @@
 package main
 
 import (
-	"compress/flate"
 	"fmt"
 	"net/http"
 
@@ -16,7 +15,6 @@ var upgrader = &websocket.Upgrader{
 	CompressionConfig: websocket.CompressionConfig{
 		Enabled:           true,
 		IsContextTakeover: true,
-		CompressionLevel:  flate.DefaultCompression,
 		// force compression
 		CompressionThreshold: 1,
 	},
