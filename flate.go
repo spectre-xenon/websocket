@@ -18,7 +18,38 @@ const (
 
 // we use a sync.Pool to reuse existing flate objects,
 // and to make it safe for concurrent use.
-var flateReaderPool sync.Pool
+var flateWriterPool, flateReaderPool sync.Pool
+
+type flateWriter struct {
+	fw    *flate.Writer
+	level int
+}
+
+func getFlateWriter(w io.Writer, level int) *flateWriter {
+	fws, ok := flateReaderPool.Get().(*flateWriter)
+	if !ok {
+		fw, _ := flate.NewWriter(w, level)
+		fws = &flateWriter{
+			fw: fw,
+		}
+		return fws
+	}
+	if fws.level != level {
+		putFlateWriter(fws)
+		fw, _ := flate.NewWriter(w, level)
+		fws = &flateWriter{
+			fw: fw,
+		}
+		return fws
+	}
+
+	fws.fw.Reset(w)
+	return fws
+}
+
+func putFlateWriter(fw *flateWriter) {
+	flateReaderPool.Put(fw)
+}
 
 func getFlateReader(r io.Reader, dict []byte) io.Reader {
 	fr, ok := flateReaderPool.Get().(flate.Reader)
@@ -26,11 +57,11 @@ func getFlateReader(r io.Reader, dict []byte) io.Reader {
 		return flate.NewReaderDict(r, dict)
 	}
 	// cast flate.Reader to flate.Resetter
+	fr.(flate.Resetter).Reset(nil, nil)
 	return fr
 }
 
 func putFlateReader(fr io.Reader) {
-	fr.(flate.Resetter).Reset(nil, nil)
 	flateReaderPool.Put(fr)
 }
 
@@ -86,8 +117,8 @@ type CompressionConfig struct {
 }
 
 type flatter struct {
-	fw *flate.Writer
-	fr io.Reader
+	fws *flateWriter
+	fr  io.Reader
 
 	writeBuffer, readBuffer bytes.Buffer
 	compressionLevel        int
@@ -107,7 +138,7 @@ func NewFlatter(cc *CompressionConfig) *flatter {
 		cc.CompressionLevel = flate.DefaultCompression
 	}
 
-	fw, _ := flate.NewWriterDict(&writeBuffer, cc.CompressionLevel, nil)
+	fws := getFlateWriter(&writeBuffer, cc.CompressionLevel)
 	fr := getFlateReader(nil, nil)
 
 	var sw *slidingWindow
@@ -116,7 +147,7 @@ func NewFlatter(cc *CompressionConfig) *flatter {
 	}
 
 	return &flatter{
-		fw:                fw,
+		fws:               fws,
 		fr:                fr,
 		writeBuffer:       writeBuffer,
 		compressionLevel:  cc.CompressionLevel,
@@ -126,11 +157,7 @@ func NewFlatter(cc *CompressionConfig) *flatter {
 }
 
 func (f *flatter) renewWriter() {
-	if f.isContextTakeover {
-		f.fw, _ = flate.NewWriterDict(&f.writeBuffer, flate.DefaultCompression, f.sw.buf)
-	} else {
-		f.fw, _ = flate.NewWriter(&f.writeBuffer, flate.DefaultCompression)
-	}
+	f.fws.fw.Reset(&f.writeBuffer)
 }
 
 func (f *flatter) renewReader(payload []byte) {
@@ -147,11 +174,11 @@ func (f *flatter) DeFlate(payload []byte) ([]byte, error) {
 	f.renewWriter()
 	f.writeBuffer.Reset()
 
-	_, err := f.fw.Write(payload)
+	_, err := f.fws.fw.Write(payload)
 	if err != nil {
 		return nil, err
 	}
-	err = f.fw.Flush()
+	err = f.fws.fw.Flush()
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +206,8 @@ func (f *flatter) InFlate(payload []byte) ([]byte, error) {
 }
 
 func (f *flatter) Close() {
-	f.fw.Close()
 	putFlateReader(f.fr)
+	putFlateWriter(f.fws)
 	if f.isContextTakeover {
 		putSlidingWindow(f.sw)
 	}
