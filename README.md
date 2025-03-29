@@ -4,6 +4,11 @@
 
 A lightweight, efficient, and RFC 6455 compliant WebSocket implementation in Go.
 
+## Documentation
+
+- [API Reference](https://pkg.go.dev/github.com/spectre-xenon/websocket?tab=doc)
+- [Echo example](https://github.com/gorilla/spectre-xenon/tree/main/examples/echo)
+
 ## Features
 
 **Fully Autobahn Testsuite Compliant**
@@ -24,11 +29,6 @@ _Passes all test cases from the [Autobahn Testsuite](https://github.com/crossbar
 ```bash
 go get github.com/spectre-xenon/websocket
 ```
-
-## Documentation
-
-- [API Reference](https://pkg.go.dev/github.com/spectre-xenon/websocket?tab=doc)
-- [Echo example](https://github.com/gorilla/spectre-xenon/tree/main/examples/echo)
 
 ## Contributing
 
