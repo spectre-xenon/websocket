@@ -27,7 +27,7 @@ type Conn struct {
 func newConn(netConn net.Conn, br *bufio.Reader, cc *CompressionConfig, subprotocol string, isServer bool) *Conn {
 	var flatter *flatter
 	if cc.Enabled {
-		flatter = NewFlatter(cc)
+		flatter = newFlatter(cc)
 	}
 
 	// compresion threshold default if not set

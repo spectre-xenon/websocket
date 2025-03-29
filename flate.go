@@ -128,7 +128,7 @@ type flatter struct {
 	isContextTakeover bool
 }
 
-func NewFlatter(cc *CompressionConfig) *flatter {
+func newFlatter(cc *CompressionConfig) *flatter {
 	var writeBuffer bytes.Buffer
 
 	// use a known compressionlevel
