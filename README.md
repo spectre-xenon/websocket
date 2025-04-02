@@ -7,7 +7,7 @@ A lightweight, efficient, and RFC 6455 compliant WebSocket implementation in Go.
 ## Documentation
 
 - [API Reference](https://pkg.go.dev/github.com/spectre-xenon/websocket?tab=doc)
-- [Echo example](https://github.com/gorilla/spectre-xenon/tree/main/examples/echo)
+- [Echo example](https://github.com/spectre-xenon/websocket/tree/main/examples/echo)
 
 ## Features
 
